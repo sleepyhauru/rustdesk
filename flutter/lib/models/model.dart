@@ -1998,7 +1998,11 @@ class ImageModel with ChangeNotifier {
     final size = parent.target!.canvasModel.getSize();
     final xscale = size.width / _image!.width;
     final yscale = size.height / _image!.height;
-    return min(xscale, yscale) / 1.5;
+    // FORK: never allow pinching out past fit-to-window. min(xscale, yscale)
+    // is exactly the fit scale; upstream divides it by 1.5, which is what lets
+    // the remote image shrink to two thirds of fit with dead space around it.
+    // CanvasModel.updateScale() clamps every pinch to this value.
+    return min(xscale, yscale);
   }
 
   updateUserTextureRender() {
@@ -2387,6 +2391,34 @@ class CanvasModel with ChangeNotifier {
         _scale /= _devicePixelRatio;
       }
     }
+    // FORK: never allow zooming out past fit-to-window in Custom view style.
+    //
+    // This must run AFTER the kIgnoreDpi block, not before it. The rendered
+    // image extent is `displayWidth * _scale` compared against `size` (see
+    // _resetCanvasOffset below, and ImagePaint in desktop/pages/remote_page.dart),
+    // and both are logical pixels only once _scale has been divided by
+    // _devicePixelRatio. Clamping before that division leaves the effective
+    // scale at fitScale / devicePixelRatio, so the guarantee silently fails on
+    // any HiDPI display while looking correct at devicePixelRatio == 1.0.
+    //
+    // Custom-only: Original legitimately renders 1:1 even when that is smaller
+    // than the window. Zero guards mirror ViewStyle.scale above.
+    //
+    // Applies on mobile too: mobile has its own Custom-scale slider
+    // (mobile/widgets/custom_scale_widget.dart) routing through the same
+    // _applyScale -> updateViewStyle path. Mobile pinch-zoom is a separate
+    // path, clamped via ImageModel.minScale.
+    if (style == kRemoteViewStyleCustom &&
+        size.width != 0 &&
+        size.height != 0 &&
+        displayWidth != 0 &&
+        displayHeight != 0) {
+      final fitScale =
+          min(size.width / displayWidth, size.height / displayHeight);
+      if (_scale < fitScale) {
+        _scale = fitScale;
+      }
+    }
     _resetCanvasOffset(displayWidth, displayHeight);
     final overflow = _x < 0 || y < 0;
     if (_imageOverflow.value != overflow) {
@@ -2657,8 +2689,41 @@ class CanvasModel with ChangeNotifier {
     notifyListeners();
   }
 
+  // FORK: keep the remote image inside the viewport on mobile.
+  //
+  // panX/panY and updateScale all write _x/_y with no bounds at all, so the
+  // image can be dragged or pinched into empty space and left there. Once the
+  // scale floor stops zoom-out at fit, an axis that already fits has nowhere
+  // legitimate to pan, so pin it centred; an axis larger than the viewport pans
+  // freely but cannot be pulled past its own edges.
+  void _clampMobileOffset() {
+    if (!isMobile) return;
+    // Size from the decoded frame, not the display rect: ImageModel.minScale
+    // and the mobile ImagePaint both measure the drawn image that way, and the
+    // clamp has to agree with what is actually painted.
+    final image = parent.target?.imageModel.image;
+    final imageWidth =
+        (image?.width.toDouble() ?? getDisplayWidth().toDouble()) * _scale;
+    final imageHeight =
+        (image?.height.toDouble() ?? getDisplayHeight().toDouble()) * _scale;
+    if (imageWidth <= 0 || imageHeight <= 0) return;
+    if (imageWidth <= size.width) {
+      _x = (size.width - imageWidth) / 2;
+    } else {
+      if (_x > 0) _x = 0;
+      if (_x < size.width - imageWidth) _x = size.width - imageWidth;
+    }
+    if (imageHeight <= size.height) {
+      _y = (size.height - imageHeight) / 2;
+    } else {
+      if (_y > 0) _y = 0;
+      if (_y < size.height - imageHeight) _y = size.height - imageHeight;
+    }
+  }
+
   panX(double dx) {
     _x += dx;
+    _clampMobileOffset();
     if (isMobile) {
       isMobileCanvasChanged = true;
     }
@@ -2676,10 +2741,34 @@ class CanvasModel with ChangeNotifier {
 
   panY(double dy) {
     _y += dy;
+    _clampMobileOffset();
     if (isMobile) {
       isMobileCanvasChanged = true;
     }
     notifyListeners();
+  }
+
+  // FORK: screen position of the remote cursor, for cursor-anchored zoom.
+  //
+  // The image's on-screen origin is (_x, _y + adjust) — see the mobile
+  // ImagePaint, which draws at ((c.x)/s, (c.y + adjust)/s) under canvas.scale(s).
+  // So a point `cursorModel.x` remote pixels into the image lands at
+  // _x + cursorModel.x * scale.
+  //
+  // Returns null when the cursor cannot serve as an anchor: no session, or it
+  // has not been positioned yet (CursorModel starts at -10000), or it is off
+  // screen because the view was panned away. Callers fall back to the pinch
+  // focal point in those cases.
+  Offset? _cursorScreenAnchor(double scale, double adjust) {
+    final cursor = parent.target?.cursorModel;
+    if (cursor == null) return null;
+    final cx = cursor.x;
+    final cy = cursor.y;
+    if (!cx.isFinite || !cy.isFinite) return null;
+    final sx = _x + cx * scale;
+    final sy = _y + adjust + cy * scale;
+    if (sx < 0 || sx > size.width || sy < 0 || sy > size.height) return null;
+    return Offset(sx, sy);
   }
 
   // mobile only
@@ -2691,13 +2780,21 @@ class CanvasModel with ChangeNotifier {
     final mins = parent.target?.imageModel.minScale ?? 1;
     if (_scale > maxs) _scale = maxs;
     if (_scale < mins) _scale = mins;
-    // (focalPoint.dx - _x_1) / s1 + displayOriginX = (focalPoint.dx - _x_2) / s2 + displayOriginX
-    // _x_2 = focalPoint.dx - (focalPoint.dx - _x_1) / s1 * s2
-    _x = focalPoint.dx - (focalPoint.dx - _x) / s * _scale;
     final adjust = getAdjustY();
-    // (focalPoint.dy - _y_1 - adjust) / s1 + displayOriginY = (focalPoint.dy - _y_2 - adjust) / s2 + displayOriginY
-    // _y_2 = focalPoint.dy - adjust - (focalPoint.dy - _y_1 - adjust) / s1 * s2
-    _y = focalPoint.dy - adjust - (focalPoint.dy - _y - adjust) / s * _scale;
+    // FORK: anchor the zoom on the remote cursor rather than the pinch focal
+    // point. Feeding the cursor's screen position through the same fixed-point
+    // math below holds it stationary while the image scales around it, instead
+    // of the view drifting wherever the fingers happened to land.
+    final anchor = _cursorScreenAnchor(s, adjust) ?? focalPoint;
+    // (anchor.dx - _x_1) / s1 + displayOriginX = (anchor.dx - _x_2) / s2 + displayOriginX
+    // _x_2 = anchor.dx - (anchor.dx - _x_1) / s1 * s2
+    _x = anchor.dx - (anchor.dx - _x) / s * _scale;
+    // (anchor.dy - _y_1 - adjust) / s1 + displayOriginY = (anchor.dy - _y_2 - adjust) / s2 + displayOriginY
+    // _y_2 = anchor.dy - adjust - (anchor.dy - _y_1 - adjust) / s1 * s2
+    _y = anchor.dy - adjust - (anchor.dy - _y - adjust) / s * _scale;
+    // FORK: the fixed-point math above is unbounded, so a pinch can park the
+    // image off-screen even when the scale itself is legal.
+    _clampMobileOffset();
     if (isMobile) {
       isMobileCanvasChanged = true;
     }
@@ -2749,6 +2846,29 @@ class CanvasModel with ChangeNotifier {
         Timer(Duration(milliseconds: 100), () async {
       updateSize();
       _resetCanvasOffset(getDisplayWidth(), getDisplayHeight());
+      notifyListeners();
+    });
+  }
+
+  // FORK: the soft keyboard only changes the size of the viewport, so only
+  // re-fit the viewport — keep the zoom and the pan the user chose.
+  //
+  // This replaces mobileFocusCanvasCursor() on the soft-keyboard path, which
+  // re-frames unconditionally: _resetCanvasOffset() re-centres the whole image
+  // and _moveToCenterCursor() then drags the remote cursor to the middle, so
+  // opening the keyboard threw away wherever the user had pinched and panned
+  // to. _clampMobileOffset() instead pulls the image back over the now-shorter
+  // viewport by the minimum required and never touches _scale, so nothing
+  // moves at all unless the keyboard actually uncovered dead space.
+  //
+  // Shares _timerMobileFocusCanvasCursor deliberately:
+  // restoreMobileOffsetAfterSoftKeyboard() cancels that timer to make sure a
+  // pending re-fit cannot land after the offset has been restored on close.
+  void mobileRefitCanvasForSoftKeyboard() {
+    _timerMobileFocusCanvasCursor?.cancel();
+    _timerMobileFocusCanvasCursor = Timer(Duration(milliseconds: 100), () {
+      updateSize();
+      _clampMobileOffset();
       notifyListeners();
     });
   }
@@ -3032,7 +3152,9 @@ class CursorModel with ChangeNotifier {
     if (isMobile && _lastKeyboardIsVisible != keyboardIsVisible) {
       if (keyboardIsVisible) {
         parent.target?.canvasModel.saveMobileOffsetBeforeSoftKeyboard();
-        parent.target?.canvasModel.mobileFocusCanvasCursor();
+        // FORK: re-fit the shrunken viewport instead of re-framing on the
+        // cursor, so opening the keyboard preserves the user's zoom and pan.
+        parent.target?.canvasModel.mobileRefitCanvasForSoftKeyboard();
         parent.target?.canvasModel.isMobileCanvasChanged = false;
       } else {
         parent.target?.canvasModel.restoreMobileOffsetAfterSoftKeyboard();

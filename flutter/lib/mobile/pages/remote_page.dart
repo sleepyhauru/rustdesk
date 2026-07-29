@@ -505,8 +505,28 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                     child: isWebDesktop
                         ? getBodyForDesktopWithListener()
                         : SafeArea(
-                            child:
-                                OrientationBuilder(builder: (ctx, orientation) {
+                            child: OrientationBuilder(builder: (ctx, _) {
+                              // FORK: take the orientation from the screen, not
+                              // from this subtree's constraints.
+                              //
+                              // OrientationBuilder is a LayoutBuilder comparing
+                              // maxWidth against maxHeight, and this one sits
+                              // inside the Scaffold body, which shrinks by the
+                              // soft-keyboard inset (resizeToAvoidBottomInset
+                              // defaults to true). On a phone the keyboard can
+                              // leave the body wider than it is tall, so opening
+                              // the keyboard reads as a rotation that never
+                              // happened — and updateViewStyle() below then
+                              // resets _scale to fit and re-centres the canvas,
+                              // throwing away the user's pinch zoom.
+                              //
+                              // Scaffold rewrites padding and viewInsets for the
+                              // body but never MediaQuery.size, so size is the
+                              // real screen and the keyboard cannot move it.
+                              final screen = MediaQuery.of(ctx).size;
+                              final orientation = screen.width > screen.height
+                                  ? Orientation.landscape
+                                  : Orientation.portrait;
                               if (_currentOrientation != orientation) {
                                 Timer(const Duration(milliseconds: 200), () {
                                   gFFI.dialogManager
@@ -930,7 +950,12 @@ class KeyHelpTools extends StatefulWidget {
 }
 
 class _KeyHelpToolsState extends State<KeyHelpTools> {
-  var _more = true;
+  // FORK: start collapsed. Upstream defaults to `true`, so the bar opens with
+  // the full Esc/Tab/Home/End/arrows/Ctrl+C block every time the soft keyboard
+  // appears — several rows tall on a phone, and `getSize()` subtracts that
+  // height from the canvas. Only the modifier row plus Fn/pin/`...` shows now;
+  // tapping `...` still expands it for the rest of the session.
+  var _more = false;
   var _fn = false;
   var _pin = false;
   final _keyboardVisibilityController = KeyboardVisibilityController();

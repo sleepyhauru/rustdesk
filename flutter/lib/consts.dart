@@ -416,8 +416,10 @@ const Set<PointerDeviceKind> kTouchBasedDeviceKinds = {
 
 // Scale custom related constants
 const String kCustomScalePercentKey =
-    'custom_scale_percent'; // Flutter option key for storing custom scale percent (integer 5-1000)
-const int kScaleCustomMinPercent = 5;
+    'custom_scale_percent'; // Flutter option key for storing custom scale percent (integer 25-1000)
+// FORK: raised from 5 so the slider floor roughly agrees with the
+// fit-to-window clamp in CanvasModel.updateViewStyle().
+const int kScaleCustomMinPercent = 25;
 const int kScaleCustomPivotPercent = 100; // 100% should be at 1/3 of track
 const int kScaleCustomMaxPercent = 1000;
 const double kScaleCustomPivotPos = 1.0 / 3.0; // first 1/3 → up to 100%
