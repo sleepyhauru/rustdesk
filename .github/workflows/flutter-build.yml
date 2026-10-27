@@ -487,10 +487,13 @@ jobs:
       fail-fast: false
       matrix:
         job:
+          # FORK: Xcode 27.1 (iOS 27.1 SDK) ships only on the `xcode-27` preview
+          # image, where it is the default. macos-latest is macOS 26 arm64 and
+          # tops out at Xcode 26.x, which still builds letterboxed on the Duo.
           - {
               arch: aarch64,
               target: aarch64-apple-ios,
-              os: macos-latest,
+              os: xcode-27,
               vcpkg-triplet: arm64-ios,
             }
     steps:
