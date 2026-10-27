@@ -47,7 +47,7 @@ env:
   # letterboxed on the iPhone Duo's inner display, and that needs Xcode 27, which
   # in turn needs Flutter >= 3.47 (UIScene lifecycle, min iOS 15). Every other
   # platform stays on FLUTTER_VERSION.
-  FLUTTER_IOS_VERSION: "3.47.7"
+  FLUTTER_IOS_VERSION: "3.47.8"
   # Xcode 27 is Apple Silicon only; the iOS job runs on an arm64 runner.
   XCODE_IOS_VERSION: "27.1"
   # for arm64 linux because official Dart SDK does not work
@@ -508,6 +508,13 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           submodules: recursive
+
+      # FORK: the ThemeData renames and extended_text/google_fonts bumps this
+      # applies are required by every Flutter >= 3.44, so the iOS job on 3.47
+      # needs them too. Committed sources stay on 3.24.5 for the other targets.
+      - name: Patch RustDesk sources for Flutter 3.44+
+        shell: bash
+        run: bash .github/patches/apply_flutter_3.44_source_patches.sh
 
       - name: Select Xcode
         run: |
