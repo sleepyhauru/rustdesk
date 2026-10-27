@@ -27,6 +27,18 @@ jobs:
             }
           # FORK: the Flutter 3.44 bridge existed only for the Windows arm64 build,
           # which this fork no longer builds. Dropped so no job consumes it.
+          #
+          # FORK: the iOS build is on 3.47.8 (Xcode 27 / iOS 27.1 SDK, see
+          # flutter-build.yml), so it needs its own bridge: the generated
+          # *.freezed.dart has to compile against the same Flutter/freezed that
+          # build resolves, which is why upstream kept a per-version bridge.
+          - {
+              target: x86_64-unknown-linux-gnu,
+              os: ubuntu-22.04,
+              extra-build-args: "",
+              flutter-version: "3.47.8",
+              artifact-name: "bridge-artifact-flutter-3.47",
+            }
     steps:
       - name: Checkout source code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
