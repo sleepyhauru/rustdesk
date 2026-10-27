@@ -506,7 +506,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install nasm yasm
+          brew install nasm yasm gnu-sed
       - name: Checkout source code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -517,7 +517,14 @@ jobs:
       # needs them too. Committed sources stay on 3.24.5 for the other targets.
       - name: Patch RustDesk sources for Flutter 3.44+
         shell: bash
-        run: bash .github/patches/apply_flutter_3.44_source_patches.sh
+        run: |
+          # The shared script uses GNU `sed -i`; macOS ships BSD sed, which
+          # reads the expression as the backup suffix and dies. Upstream only
+          # ever ran this on Linux and Windows, so prepend GNU coreutils here
+          # rather than touching a script the bridge job also uses.
+          export PATH="$(brew --prefix gnu-sed)/libexec/gnubin:$PATH"
+          sed --version | head -1
+          bash .github/patches/apply_flutter_3.44_source_patches.sh
 
       - name: Select Xcode
         run: |
