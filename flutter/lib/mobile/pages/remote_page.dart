@@ -91,6 +91,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   bool _showGestureHelp = false;
   String _value = '';
   Orientation? _currentOrientation;
+  Size? _lastScreenSize;
   final _uniqueKey = UniqueKey();
   Timer? _iosKeyboardWorkaroundTimer;
 
@@ -225,6 +226,31 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       trySyncClipboard();
     }
+  }
+
+  // FORK: folding or unfolding an iPhone Duo swaps between two displays of very
+  // different size without changing orientation, so the OrientationBuilder in
+  // build() never fires and the canvas keeps the scale and offset it had on the
+  // other screen.
+  //
+  // Compare the screen size, not the insets: the soft keyboard moves
+  // viewInsets and leaves size alone, so this cannot re-trigger the reset the
+  // OrientationBuilder comment above is guarding against.
+  @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    final size = MediaQueryData.fromView(
+            WidgetsBinding.instance.platformDispatcher.views.first)
+        .size;
+    if (_lastScreenSize == size) return;
+    final isFirst = _lastScreenSize == null;
+    _lastScreenSize = size;
+    if (isFirst) return;
+    // Metrics land before the frame that lays the new viewport out, so defer:
+    // CanvasModel.getSize() has to read the post-fold view, not the old one.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      gFFI.canvasModel.updateViewStyle();
+    });
   }
 
   // For client side

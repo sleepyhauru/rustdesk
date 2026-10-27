@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -156,7 +155,10 @@ class _ViewCameraPageState extends State<ViewCameraPage>
       return;
     }
 
-    final newBottom = MediaQueryData.fromView(ui.window).viewInsets.bottom;
+    final newBottom = MediaQueryData.fromView(
+            WidgetsBinding.instance.platformDispatcher.views.first)
+        .viewInsets
+        .bottom;
     _timerDidChangeMetrics?.cancel();
     _timerDidChangeMetrics = Timer(Duration(milliseconds: 100), () async {
       // We need this comparation because poping up the floating action will also trigger `didChangeMetrics()`.

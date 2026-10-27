@@ -43,6 +43,13 @@ env:
   # support is restored after the upstream-wide Flutter bump. The arm64 job patches the few
   # 3.44-only source/pubspec changes on the fly (see "Patch RustDesk sources for Flutter 3.44").
   FLUTTER_WINDOWS_ARM_VERSION: "3.44.9"
+  # iOS only: building against the iOS 27.1 SDK is what stops the app running
+  # letterboxed on the iPhone Duo's inner display, and that needs Xcode 27, which
+  # in turn needs Flutter >= 3.47 (UIScene lifecycle, min iOS 15). Every other
+  # platform stays on FLUTTER_VERSION.
+  FLUTTER_IOS_VERSION: "3.47.7"
+  # Xcode 27 is Apple Silicon only; the iOS job runs on an arm64 runner.
+  XCODE_IOS_VERSION: "27.1"
   # for arm64 linux because official Dart SDK does not work
   FLUTTER_ELINUX_VERSION: "3.16.9"
   TAG_NAME: "${{ inputs.upload-tag }}"
@@ -502,16 +509,22 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_IOS_VERSION}.app"
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i iphoneos
+
       - name: Install flutter
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          flutter-version: ${{ env.FLUTTER_IOS_VERSION }}
 
       - name: Patch flutter
         run: |
           cd $(dirname $(dirname $(which flutter)))
-          if [[ "3.24.5" == ${{env.FLUTTER_VERSION}} ]]; then
+          if [[ "3.24.5" == ${{env.FLUTTER_IOS_VERSION}} ]]; then
             git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
           fi
 
