@@ -538,6 +538,14 @@ jobs:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_IOS_VERSION }}
 
+      # FORK: Swift Package Manager defaults to ON from Flutter 3.47. It moves
+      # the SPM-capable plugins out of CocoaPods while Runner.xcodeproj still
+      # links them as pod frameworks, so the build dies on
+      # "Framework 'image_picker_ios' not found". Keep the CocoaPods-only
+      # integration this project is set up for.
+      - name: Disable Swift Package Manager
+        run: flutter config --no-enable-swift-package-manager
+
       - name: Patch flutter
         run: |
           cd $(dirname $(dirname $(which flutter)))
