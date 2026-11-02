@@ -60,8 +60,12 @@
 					<string>UIWindowScene</string>
 					<key>UISceneConfigurationName</key>
 					<string>Default Configuration</string>
+					<!-- FORK: the iOS job builds with Flutter 3.47 for the iOS 27.1 SDK,
+					     which ships FlutterSceneDelegate; plugin registration then runs
+					     from FlutterImplicitEngineDelegate in AppDelegate. Upstream's
+					     SceneDelegate.swift is the hand-rolled equivalent for 3.24.5. -->
 					<key>UISceneDelegateClassName</key>
-					<string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
+					<string>FlutterSceneDelegate</string>
 					<key>UISceneStoryboardFile</key>
 					<string>Main</string>
 				</dict>

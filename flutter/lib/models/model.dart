@@ -2240,6 +2240,12 @@ class EdgeScrollFallbackState {
   }
 }
 
+// FORK: the same view `ui.window` returned, through the API that replaced it.
+// `ui.window` is gone in the Flutter the iOS build now uses (3.47), which is
+// required for Xcode 27 and the iOS 27.1 SDK. Matches input_model.dart.
+ui.FlutterView get _view =>
+    WidgetsBinding.instance.platformDispatcher.views.first;
+
 class CanvasModel with ChangeNotifier {
   // image offset of canvas
   double _x = 0;
@@ -2341,7 +2347,7 @@ class CanvasModel with ChangeNotifier {
       isDesktop ? windowBorderWidth + kDragToResizeAreaPadding.bottom : 0;
 
   Size getSize() {
-    final mediaData = MediaQueryData.fromView(ui.window);
+    final mediaData = MediaQueryData.fromView(_view);
     final size = mediaData.size;
     // If minimized, w or h may be negative here.
     double w = size.width - leftToEdge - rightToEdge;
@@ -2381,7 +2387,7 @@ class CanvasModel with ChangeNotifier {
   double getAdjustY() {
     final bottom =
         parent.target?.cursorModel.keyHelpToolsRectToAdjustCanvas?.bottom ?? 0;
-    return max(bottom - MediaQueryData.fromView(ui.window).padding.top, 0);
+    return max(bottom - MediaQueryData.fromView(_view).padding.top, 0);
   }
 
   updateSize() => _size = getSize();
@@ -2409,7 +2415,7 @@ class CanvasModel with ChangeNotifier {
     // allow updates to proceed when style == kRemoteViewStyleCustom, even if the
     // rest of the ViewStyle fields are unchanged.
     if (_lastViewStyle == viewStyle &&
-        _devicePixelRatio == ui.window.devicePixelRatio &&
+        _devicePixelRatio == _view.devicePixelRatio &&
         style != kRemoteViewStyleCustom) {
       return;
     }
@@ -2430,7 +2436,7 @@ class CanvasModel with ChangeNotifier {
       }
     }
 
-    _devicePixelRatio = ui.window.devicePixelRatio;
+    _devicePixelRatio = _view.devicePixelRatio;
     if (kIgnoreDpi) {
       if (style == kRemoteViewStyleOriginal) {
         _scale = 1.0 / _devicePixelRatio;
@@ -2855,7 +2861,7 @@ class CanvasModel with ChangeNotifier {
   // For reset canvas to the last view style
   reset() {
     _scale = _lastViewStyle.scale;
-    _devicePixelRatio = ui.window.devicePixelRatio;
+    _devicePixelRatio = _view.devicePixelRatio;
     if (kIgnoreDpi && _lastViewStyle.style == kRemoteViewStyleOriginal) {
       _scale = 1.0 / _devicePixelRatio;
     }
@@ -3361,7 +3367,7 @@ class CursorModel with ChangeNotifier {
   // For update pan (mobile), onOneFingerPanStart, onOneFingerPanUpdate, onHoldDragUpdate
   Rect getVisibleRect() {
     final size = parent.target?.canvasModel.getSize() ??
-        MediaQueryData.fromView(ui.window).size;
+        MediaQueryData.fromView(_view).size;
     final xoffset = parent.target?.canvasModel.x ?? 0;
     final yoffset = parent.target?.canvasModel.y ?? 0;
     final scale = parent.target?.canvasModel.scale ?? 1;
@@ -3378,7 +3384,7 @@ class CursorModel with ChangeNotifier {
     // _x = _displayOriginX - xoffset / scale + size.width / scale * 0.5;
     // _y = _displayOriginY - yoffset / scale + size.height / scale * 0.5;
     final size = parent.target?.canvasModel.getSize() ??
-        MediaQueryData.fromView(ui.window).size;
+        MediaQueryData.fromView(_view).size;
     final xoffset = (_displayOriginX - _x) * scale + size.width * 0.5;
     final yoffset = (_displayOriginY - _y) * scale + size.height * 0.5;
     return Offset(xoffset, yoffset);
