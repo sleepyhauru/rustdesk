@@ -547,6 +547,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   // _floatingOverflowMenus().
   Widget _floatingToolbarButtons() {
     final ffiModel = Provider.of<FfiModel>(context);
+    final keyboardIsVisible =
+        keyboardVisibilityController.isVisible && _showEdit;
     return Row(
       mainAxisSize: MainAxisSize.max,
       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -559,8 +561,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         if (!ffiModel.viewOnly && ffiModel.keyboard)
           IconButton(
             color: Colors.white,
-            icon: Icon(Icons.keyboard),
-            onPressed: openKeyboard,
+            icon: Icon(keyboardIsVisible ? Icons.keyboard_hide : Icons.keyboard),
+            onPressed: keyboardIsVisible ? _hideSoftKeyboard : openKeyboard,
           ),
         IconButton(
           color: Colors.white,
@@ -581,6 +583,15 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
             )),
       ],
     );
+  }
+
+  void _hideSoftKeyboard() {
+    setState(() {
+      _showEdit = false;
+      gFFI.invokeMethod("enable_soft_keyboard", false);
+      _mobileFocusNode.unfocus();
+      _physicalFocusNode.requestFocus();
+    });
   }
 
   // The controls the floating toolbar drops, so nothing becomes unreachable.
@@ -609,7 +620,12 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final keyboardIsVisible =
         keyboardVisibilityController.isVisible && _showEdit;
-    final showActionButton = !_showBar || keyboardIsVisible || _showGestureHelp;
+    // FORK: the floating toolbar dismisses the keyboard from its own keyboard
+    // button, so the action button would only duplicate it -- same chevron,
+    // floating directly above the bar.
+    final showActionButton = _useFloatingToolbar
+        ? (!_showBar || _showGestureHelp)
+        : (!_showBar || keyboardIsVisible || _showGestureHelp);
 
     return WillPopScope(
       onWillPop: () async {
