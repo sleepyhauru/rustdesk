@@ -2353,8 +2353,14 @@ class CanvasModel with ChangeNotifier {
     double w = size.width - leftToEdge - rightToEdge;
     double h = size.height - topToEdge - bottomToEdge;
     if (isMobile) {
-      // Account for horizontal safe area insets on both orientations.
-      w = w - mediaData.padding.left - mediaData.padding.right;
+      // FORK: iOS floats the toolbar clear of the horizontal insets and lets
+      // the canvas span them (see mobile/pages/remote_page.dart), so the image
+      // is scaled to the whole width. Subtracting the insets here left it short
+      // of the edge by the width of the iPhone Duo's side inset.
+      if (!isIOS) {
+        // Account for horizontal safe area insets on both orientations.
+        w = w - mediaData.padding.left - mediaData.padding.right;
+      }
       // Vertically, subtract the bottom keyboard inset (viewInsets.bottom) and any
       // bottom overlay (e.g. key-help tools) so the canvas is not covered.
       h = h -

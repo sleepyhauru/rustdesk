@@ -523,8 +523,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
           ? (_useFloatingToolbar ? _floatingToolbar() : getBottomAppBar())
           : Offstage());
 
-  // Translucent and rounded rather than a solid bar: it sits on top of the
-  // remote image, so it has to read over both light and dark desktops.
+  // Dark glass rather than a solid accent bar: it sits on top of the remote
+  // image, so it has to read over both light and dark desktops.
   Widget _floatingToolbar() => Padding(
         padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
         child: ClipRRect(
@@ -532,12 +532,78 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
           child: BackdropFilter(
             filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
             child: Material(
-              color: MyTheme.accent.withOpacity(0.7),
-              child: getBottomAppBar(),
+              color: Colors.black.withOpacity(0.4),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: _floatingToolbarButtons(),
+              ),
             ),
           ),
         ),
       );
+
+  // Only the controls that are wanted at a thumb's reach; everything the bottom
+  // bar carries beyond these moves into the overflow menu, see
+  // _floatingOverflowMenus().
+  Widget _floatingToolbarButtons() {
+    final ffiModel = Provider.of<FfiModel>(context);
+    return Row(
+      mainAxisSize: MainAxisSize.max,
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: <Widget>[
+        IconButton(
+          color: Colors.white,
+          icon: Icon(Icons.clear),
+          onPressed: () => clientClose(sessionId, gFFI),
+        ),
+        if (!ffiModel.viewOnly && ffiModel.keyboard)
+          IconButton(
+            color: Colors.white,
+            icon: Icon(Icons.keyboard),
+            onPressed: openKeyboard,
+          ),
+        IconButton(
+          color: Colors.white,
+          icon: Icon(Icons.more_vert),
+          onPressed: () {
+            setState(() => _showEdit = false);
+            showActions(widget.id);
+          },
+        ),
+        Obx(() => IconButton(
+              color: Colors.white,
+              icon: Icon(Icons.expand_more),
+              onPressed: gFFI.ffiModel.waitForFirstImage.isTrue
+                  ? null
+                  : () {
+                      setState(() => _showBar = !_showBar);
+                    },
+            )),
+      ],
+    );
+  }
+
+  // The controls the floating toolbar drops, so nothing becomes unreachable.
+  // All three keys already exist in src/lang.
+  List<TTextMenu> _floatingOverflowMenus() {
+    final ffiModel = gFFI.ffiModel;
+    return [
+      TTextMenu(
+        child: Text(translate('Display Settings')),
+        onPressed: () => showOptions(context, widget.id, gFFI.dialogManager),
+      ),
+      if (!ffiModel.viewOnly && ffiModel.keyboard)
+        TTextMenu(
+          child: Text(translate('Touch mode')),
+          onPressed: () => setState(() => _showGestureHelp = !_showGestureHelp),
+        ),
+      if (!isWeb)
+        TTextMenu(
+          child: Text(translate('Chat')),
+          onPressed: () => onPressedTextChat(widget.id),
+        ),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -697,8 +763,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Widget getBottomAppBar() {
     final ffiModel = Provider.of<FfiModel>(context);
     return BottomAppBar(
-      elevation: _useFloatingToolbar ? 0 : 10,
-      color: _useFloatingToolbar ? Colors.transparent : MyTheme.accent,
+      elevation: 10,
+      color: MyTheme.accent,
       child: Row(
         mainAxisSize: MainAxisSize.max,
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -917,7 +983,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     final size = MediaQuery.of(context).size;
     final x = 120.0;
     final y = size.height;
-    final mobileActionMenus = _getMobileActionMenus();
+    final mobileActionMenus = [
+      if (_useFloatingToolbar) ..._floatingOverflowMenus(),
+      ..._getMobileActionMenus(),
+    ];
     final menus = toolbarControls(context, id, gFFI);
 
     final List<PopupMenuEntry<int>> more = [
