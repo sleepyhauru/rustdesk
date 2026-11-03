@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -508,11 +509,35 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     });
   }
 
+  // FORK: on iOS the toolbar floats over the canvas instead of being the
+  // Scaffold's bottomNavigationBar. A bottom bar takes layout space, so every
+  // expand/collapse shrank the body, re-fit the canvas and made the remote
+  // image jump by half the bar height. Floating it holds the viewport still,
+  // and is what lets the canvas keep the full width (see the SafeArea in
+  // build()) instead of leaving the iPhone Duo's side inset black.
+  bool get _useFloatingToolbar => isIOS;
+
   Widget _bottomWidget() => _showGestureHelp
       ? getGestureHelp()
       : (_showBar && gFFI.ffiModel.pi.displays.isNotEmpty
-          ? getBottomAppBar()
+          ? (_useFloatingToolbar ? _floatingToolbar() : getBottomAppBar())
           : Offstage());
+
+  // Translucent and rounded rather than a solid bar: it sits on top of the
+  // remote image, so it has to read over both light and dark desktops.
+  Widget _floatingToolbar() => Padding(
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+            child: Material(
+              color: MyTheme.accent.withOpacity(0.7),
+              child: getBottomAppBar(),
+            ),
+          ),
+        ),
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -565,14 +590,18 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                           gFFI.ffiModel.tryShowAndroidActionsOverlay();
                           return Offstage();
                         }(),
-                  _bottomWidget(),
+                  _useFloatingToolbar ? Offstage() : _bottomWidget(),
                   gFFI.ffiModel.pi.isSet.isFalse
                       ? emptyOverlay(MyTheme.canvasColor)
                       : Offstage(),
                 ],
               )),
-          body: Obx(
-            () => getRawPointerAndKeyBody(Overlay(
+          // StackFit.expand so the body keeps the tight constraints the
+          // Scaffold used to hand it directly; the canvas sizes itself from
+          // them and would otherwise shrink-wrap.
+          body: Stack(fit: StackFit.expand, children: [
+            Obx(
+              () => getRawPointerAndKeyBody(Overlay(
               initialEntries: [
                 OverlayEntry(builder: (context) {
                   return Container(
@@ -580,6 +609,15 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                     child: isWebDesktop
                         ? getBodyForDesktopWithListener()
                         : SafeArea(
+                            // FORK: the canvas spans the horizontal insets.
+                            // CanvasModel.getSize() already scales the image to
+                            // the whole view, so insetting the widget left the
+                            // image sized for a viewport wider than it got --
+                            // 18% wider on the iPhone Duo's main display, which
+                            // is the black bar down its side. The controls float
+                            // clear of the insets, so nothing lands under them.
+                            left: !_useFloatingToolbar,
+                            right: !_useFloatingToolbar,
                             child: OrientationBuilder(builder: (ctx, _) {
                               // FORK: take the orientation from the screen, not
                               // from this subtree's constraints.
@@ -624,8 +662,16 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                   );
                 })
               ],
-            )),
-          )),
+              )),
+            ),
+            if (_useFloatingToolbar)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: SafeArea(child: _bottomWidget()),
+              ),
+          ])),
     );
   }
 
@@ -651,8 +697,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Widget getBottomAppBar() {
     final ffiModel = Provider.of<FfiModel>(context);
     return BottomAppBar(
-      elevation: 10,
-      color: MyTheme.accent,
+      elevation: _useFloatingToolbar ? 0 : 10,
+      color: _useFloatingToolbar ? Colors.transparent : MyTheme.accent,
       child: Row(
         mainAxisSize: MainAxisSize.max,
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
