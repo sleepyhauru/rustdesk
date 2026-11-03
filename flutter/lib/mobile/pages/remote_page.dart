@@ -542,6 +542,35 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         ),
       );
 
+  // The collapsed control, in the same dark glass as the bar it reopens.
+  // Reachable only while the toolbar is hidden or the gesture help is up, so
+  // it has no keyboard case -- the toolbar's own button handles that.
+  Widget _floatingCollapsedButton() => ClipOval(
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+          child: Material(
+            color: Colors.black.withOpacity(0.4),
+            child: InkWell(
+              onTap: () => setState(() {
+                if (_showGestureHelp) {
+                  _showGestureHelp = false;
+                } else {
+                  _showBar = !_showBar;
+                }
+              }),
+              child: SizedBox(
+                width: 52,
+                height: 52,
+                child: Icon(
+                  _showGestureHelp ? Icons.expand_more : Icons.expand_less,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
   // Only the controls that are wanted at a thumb's reach; everything the bottom
   // bar carries beyond these moves into the overflow menu, see
   // _floatingOverflowMenus().
@@ -639,7 +668,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               : null,
           floatingActionButton: !showActionButton
               ? null
-              : FloatingActionButton(
+              : _useFloatingToolbar
+                  ? _floatingCollapsedButton()
+                  : FloatingActionButton(
                   mini: !keyboardIsVisible,
                   child: Icon(
                     (keyboardIsVisible || _showGestureHelp)
