@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -21,6 +22,7 @@ import '../../common/widgets/remote_input.dart';
 import '../../models/input_model.dart';
 import '../../models/model.dart';
 import '../../models/platform_model.dart';
+import '../../models/shortcut_model.dart';
 import '../../utils/image.dart';
 import '../widgets/dialog.dart';
 import '../widgets/custom_scale_widget.dart';
@@ -40,16 +42,44 @@ void _disableAndroidSoftKeyboard({bool? isKeyboardVisible}) {
   }
 }
 
+bool handleMobileLocalKeyEvent(KeyEvent event,
+    {required bool remoteFocused, required InputModel inputModel}) {
+  if (event is KeyUpEvent && inputModel.isViewOnly) {
+    // View-only skips normal modifier cleanup; stale physical keys would
+    // otherwise look like touch selections in the input helper.
+    inputModel.handleKeyUpEventModifiers(event);
+  }
+  if (!remoteFocused &&
+      event is KeyUpEvent &&
+      const [
+        PhysicalKeyboardKey.controlLeft,
+        PhysicalKeyboardKey.controlRight,
+        PhysicalKeyboardKey.altLeft,
+        PhysicalKeyboardKey.altRight,
+        PhysicalKeyboardKey.shiftLeft,
+        PhysicalKeyboardKey.shiftRight,
+        PhysicalKeyboardKey.metaLeft,
+        PhysicalKeyboardKey.metaRight,
+      ].contains(event.physicalKey)) {
+    // Local UI may consume key-ups while the remote input path still owns
+    // the modifiers pressed before focus moved.
+    inputModel.handleKeyEvent(event);
+  }
+  return false;
+}
+
 class RemotePage extends StatefulWidget {
   RemotePage(
       {Key? key,
       required this.id,
+      this.loginMethod = '',
       this.password,
       this.isSharedPassword,
       this.forceRelay})
       : super(key: key);
 
   final String id;
+  final String loginMethod;
   final String? password;
   final bool? isSharedPassword;
   final bool? forceRelay;
@@ -64,6 +94,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   bool _showGestureHelp = false;
   String _value = '';
   Orientation? _currentOrientation;
+  Size? _lastScreenSize;
   final _uniqueKey = UniqueKey();
   Timer? _iosKeyboardWorkaroundTimer;
 
@@ -96,6 +127,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     gFFI.ffiModel.updateEventListener(sessionId, widget.id);
     gFFI.start(
       widget.id,
+      loginMethod: widget.loginMethod,
       password: widget.password,
       isSharedPassword: widget.isSharedPassword,
       forceRelay: widget.forceRelay,
@@ -107,6 +139,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     });
     WakelockManager.enable(_uniqueKey);
     _physicalFocusNode.requestFocus();
+    HardwareKeyboard.instance.addHandler(_handleLocalKeyEvent);
     gFFI.inputModel.listenToMouse(true);
     gFFI.qualityMonitorModel.checkShowQualityMonitor(sessionId);
     keyboardSubscription =
@@ -122,6 +155,19 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       }
       _disableAndroidSoftKeyboard(
           isKeyboardVisible: keyboardVisibilityController.isVisible);
+      // Seed shortcut action callbacks once the session is ready, so that
+      // global keyboard shortcuts work even if the user never opens the
+      // toolbar menu. The returned list is intentionally discarded — the
+      // side effect of registering callbacks (inside toolbarControls) is
+      // what we want here.
+      if (mounted) {
+        toolbarControls(context, widget.id, gFFI);
+        // Mobile has no DesktopTabController, so tab-switch shortcuts will
+        // log a no-handler debug line if a user binds one.
+        registerSessionShortcutActions(gFFI);
+        _registerMobileChatShortcut();
+        registerToolbarShortcuts(context, widget.id, gFFI);
+      }
     });
     WidgetsBinding.instance.addObserver(this);
 
@@ -142,6 +188,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
   @override
   Future<void> dispose() async {
+    HardwareKeyboard.instance.removeHandler(_handleLocalKeyEvent);
     WidgetsBinding.instance.removeObserver(this);
     // Close the session up-front. `gFFI.close()` below only calls `sessionClose`
     // after several awaits (canvas save, image update, the `enable_soft_keyboard`
@@ -175,7 +222,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     // `on_voice_call_closed` should be called when the connection is ended.
     // The inner logic of `on_voice_call_closed` will check if the voice call is active.
     // Only one client is considered here for now.
-    gFFI.chatModel.onVoiceCallClosed("End connetion");
+    gFFI.chatModel.onVoiceCallClosed("End connection");
   }
 
   @override
@@ -183,6 +230,31 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       trySyncClipboard();
     }
+  }
+
+  // FORK: folding or unfolding an iPhone Duo swaps between two displays of very
+  // different size without changing orientation, so the OrientationBuilder in
+  // build() never fires and the canvas keeps the scale and offset it had on the
+  // other screen.
+  //
+  // Compare the screen size, not the insets: the soft keyboard moves
+  // viewInsets and leaves size alone, so this cannot re-trigger the reset the
+  // OrientationBuilder comment above is guarding against.
+  @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    final size = MediaQueryData.fromView(
+            WidgetsBinding.instance.platformDispatcher.views.first)
+        .size;
+    if (_lastScreenSize == size) return;
+    final isFirst = _lastScreenSize == null;
+    _lastScreenSize = size;
+    if (isFirst) return;
+    // Metrics land before the frame that lays the new viewport out, so defer:
+    // CanvasModel.getSize() has to read the post-fold view, not the old one.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      gFFI.canvasModel.updateViewStyle();
+    });
   }
 
   // For client side
@@ -253,10 +325,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       if (isIOS) {
         _iosKeyboardWorkaroundTimer?.cancel();
         _iosKeyboardWorkaroundTimer = Timer(Duration(milliseconds: 100), () {
-          if (!mounted) return;
+          if (!mounted || gFFI.chatModel.inputNode.hasFocus) return;
           _physicalFocusNode.unfocus();
           _iosKeyboardWorkaroundTimer = Timer(Duration(milliseconds: 50), () {
-            if (!mounted) return;
+            if (!mounted || gFFI.chatModel.inputNode.hasFocus) return;
             _physicalFocusNode.requestFocus();
           });
         });
@@ -335,6 +407,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       // clipboard
       oldValue = '';
     }
+    // This length-only diff assumes the IME appends at the end. If an IME
+    // leaves the caret inside paired punctuation, later insertions can replay
+    // the closing symbol: "()" -> "(a)" sends ")" instead of "a". This is a
+    // client text-diff issue, independent of the host keyboard layout.
     if (newValue.length == oldValue.length) {
       // ?
     } else if (newValue.length < oldValue.length) {
@@ -433,17 +509,152 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     });
   }
 
+  // FORK: on iOS the toolbar floats over the canvas instead of being the
+  // Scaffold's bottomNavigationBar. A bottom bar takes layout space, so every
+  // expand/collapse shrank the body, re-fit the canvas and made the remote
+  // image jump by half the bar height. Floating it holds the viewport still,
+  // and is what lets the canvas keep the full width (see the SafeArea in
+  // build()) instead of leaving the iPhone Duo's side inset black.
+  bool get _useFloatingToolbar => isIOS;
+
   Widget _bottomWidget() => _showGestureHelp
       ? getGestureHelp()
       : (_showBar && gFFI.ffiModel.pi.displays.isNotEmpty
-          ? getBottomAppBar()
+          ? (_useFloatingToolbar ? _floatingToolbar() : getBottomAppBar())
           : Offstage());
+
+  // Dark glass rather than a solid accent bar: it sits on top of the remote
+  // image, so it has to read over both light and dark desktops.
+  Widget _floatingToolbar() => Padding(
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+            child: Material(
+              color: Colors.black.withOpacity(0.4),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: _floatingToolbarButtons(),
+              ),
+            ),
+          ),
+        ),
+      );
+
+  // The collapsed control, in the same dark glass as the bar it reopens.
+  // Reachable only while the toolbar is hidden or the gesture help is up, so
+  // it has no keyboard case -- the toolbar's own button handles that.
+  Widget _floatingCollapsedButton() => ClipOval(
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+          child: Material(
+            color: Colors.black.withOpacity(0.4),
+            child: InkWell(
+              onTap: () => setState(() {
+                if (_showGestureHelp) {
+                  _showGestureHelp = false;
+                } else {
+                  _showBar = !_showBar;
+                }
+              }),
+              child: SizedBox(
+                width: 52,
+                height: 52,
+                child: Icon(
+                  _showGestureHelp ? Icons.expand_more : Icons.expand_less,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+  // Only the controls that are wanted at a thumb's reach; everything the bottom
+  // bar carries beyond these moves into the overflow menu, see
+  // _floatingOverflowMenus().
+  Widget _floatingToolbarButtons() {
+    final ffiModel = Provider.of<FfiModel>(context);
+    final keyboardIsVisible =
+        keyboardVisibilityController.isVisible && _showEdit;
+    return Row(
+      mainAxisSize: MainAxisSize.max,
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: <Widget>[
+        IconButton(
+          color: Colors.white,
+          icon: Icon(Icons.clear),
+          onPressed: () => clientClose(sessionId, gFFI),
+        ),
+        if (!ffiModel.viewOnly && ffiModel.keyboard)
+          IconButton(
+            color: Colors.white,
+            icon: Icon(keyboardIsVisible ? Icons.keyboard_hide : Icons.keyboard),
+            onPressed: keyboardIsVisible ? _hideSoftKeyboard : openKeyboard,
+          ),
+        IconButton(
+          color: Colors.white,
+          icon: Icon(Icons.more_vert),
+          onPressed: () {
+            setState(() => _showEdit = false);
+            showActions(widget.id);
+          },
+        ),
+        Obx(() => IconButton(
+              color: Colors.white,
+              icon: Icon(Icons.expand_more),
+              onPressed: gFFI.ffiModel.waitForFirstImage.isTrue
+                  ? null
+                  : () {
+                      setState(() => _showBar = !_showBar);
+                    },
+            )),
+      ],
+    );
+  }
+
+  void _hideSoftKeyboard() {
+    setState(() {
+      _showEdit = false;
+      gFFI.invokeMethod("enable_soft_keyboard", false);
+      _mobileFocusNode.unfocus();
+      _physicalFocusNode.requestFocus();
+    });
+  }
+
+  // The controls the floating toolbar drops, so nothing becomes unreachable.
+  // All three keys already exist in src/lang.
+  List<TTextMenu> _floatingOverflowMenus() {
+    final ffiModel = gFFI.ffiModel;
+    return [
+      TTextMenu(
+        child: Text(translate('Display Settings')),
+        onPressed: () => showOptions(context, widget.id, gFFI.dialogManager),
+      ),
+      if (!ffiModel.viewOnly && ffiModel.keyboard)
+        TTextMenu(
+          child: Text(translate('Touch mode')),
+          onPressed: () => setState(() => _showGestureHelp = !_showGestureHelp),
+        ),
+      if (!isWeb)
+        TTextMenu(
+          child: Text(translate('Chat')),
+          onPressed: () => onPressedTextChat(widget.id),
+        ),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
     final keyboardIsVisible =
         keyboardVisibilityController.isVisible && _showEdit;
-    final showActionButton = !_showBar || keyboardIsVisible || _showGestureHelp;
+    // FORK: the floating toolbar dismisses the keyboard from its own keyboard
+    // button, so the action button would only duplicate it -- same chevron,
+    // floating directly above the bar.
+    final showActionButton = _useFloatingToolbar
+        ? (!_showBar || _showGestureHelp)
+        : (!_showBar || keyboardIsVisible || _showGestureHelp);
 
     return WillPopScope(
       onWillPop: () async {
@@ -457,7 +668,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               : null,
           floatingActionButton: !showActionButton
               ? null
-              : FloatingActionButton(
+              : _useFloatingToolbar
+                  ? _floatingCollapsedButton()
+                  : FloatingActionButton(
                   mini: !keyboardIsVisible,
                   child: Icon(
                     (keyboardIsVisible || _showGestureHelp)
@@ -490,14 +703,18 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                           gFFI.ffiModel.tryShowAndroidActionsOverlay();
                           return Offstage();
                         }(),
-                  _bottomWidget(),
+                  _useFloatingToolbar ? Offstage() : _bottomWidget(),
                   gFFI.ffiModel.pi.isSet.isFalse
                       ? emptyOverlay(MyTheme.canvasColor)
                       : Offstage(),
                 ],
               )),
-          body: Obx(
-            () => getRawPointerAndKeyBody(Overlay(
+          // StackFit.expand so the body keeps the tight constraints the
+          // Scaffold used to hand it directly; the canvas sizes itself from
+          // them and would otherwise shrink-wrap.
+          body: Stack(fit: StackFit.expand, children: [
+            Obx(
+              () => getRawPointerAndKeyBody(Overlay(
               initialEntries: [
                 OverlayEntry(builder: (context) {
                   return Container(
@@ -505,8 +722,37 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                     child: isWebDesktop
                         ? getBodyForDesktopWithListener()
                         : SafeArea(
-                            child:
-                                OrientationBuilder(builder: (ctx, orientation) {
+                            // FORK: the canvas spans the horizontal insets.
+                            // CanvasModel.getSize() already scales the image to
+                            // the whole view, so insetting the widget left the
+                            // image sized for a viewport wider than it got --
+                            // 18% wider on the iPhone Duo's main display, which
+                            // is the black bar down its side. The controls float
+                            // clear of the insets, so nothing lands under them.
+                            left: !_useFloatingToolbar,
+                            right: !_useFloatingToolbar,
+                            child: OrientationBuilder(builder: (ctx, _) {
+                              // FORK: take the orientation from the screen, not
+                              // from this subtree's constraints.
+                              //
+                              // OrientationBuilder is a LayoutBuilder comparing
+                              // maxWidth against maxHeight, and this one sits
+                              // inside the Scaffold body, which shrinks by the
+                              // soft-keyboard inset (resizeToAvoidBottomInset
+                              // defaults to true). On a phone the keyboard can
+                              // leave the body wider than it is tall, so opening
+                              // the keyboard reads as a rotation that never
+                              // happened — and updateViewStyle() below then
+                              // resets _scale to fit and re-centres the canvas,
+                              // throwing away the user's pinch zoom.
+                              //
+                              // Scaffold rewrites padding and viewInsets for the
+                              // body but never MediaQuery.size, so size is the
+                              // real screen and the keyboard cannot move it.
+                              final screen = MediaQuery.of(ctx).size;
+                              final orientation = screen.width > screen.height
+                                  ? Orientation.landscape
+                                  : Orientation.portrait;
                               if (_currentOrientation != orientation) {
                                 Timer(const Duration(milliseconds: 200), () {
                                   gFFI.dialogManager
@@ -529,10 +775,21 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                   );
                 })
               ],
-            )),
-          )),
+              )),
+            ),
+            if (_useFloatingToolbar)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: SafeArea(child: _bottomWidget()),
+              ),
+          ])),
     );
   }
+
+  bool _handleLocalKeyEvent(KeyEvent event) => handleMobileLocalKeyEvent(event,
+      remoteFocused: _physicalFocusNode.hasPrimaryFocus, inputModel: inputModel);
 
   Widget getRawPointerAndKeyBody(Widget child) {
     final ffiModel = Provider.of<FfiModel>(context);
@@ -655,7 +912,6 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       !gFFI.inputModel.relativeMouseMode.value;
 
   Widget getBodyForMobile() {
-    final keyboardIsVisible = keyboardVisibilityController.isVisible;
     return Container(
         color: MyTheme.canvasColor,
         child: Stack(children: () {
@@ -666,9 +922,14 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               right: 10,
               child: QualityMonitor(gFFI.qualityMonitorModel),
             ),
-            KeyHelpTools(
-                keyboardIsVisible: keyboardIsVisible,
-                showGestureHelp: _showGestureHelp),
+            Obx(() {
+              final chatKeyboardRequested =
+                  gFFI.chatModel.softKeyboardRequested.value;
+              return KeyHelpTools(
+                  keyboardIsVisible: keyboardVisibilityController.isVisible &&
+                      (_showEdit || chatKeyboardRequested),
+                  showGestureHelp: _showGestureHelp);
+            }),
             SizedBox(
               width: 0,
               height: 0,
@@ -769,7 +1030,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     final size = MediaQuery.of(context).size;
     final x = 120.0;
     final y = size.height;
-    final mobileActionMenus = _getMobileActionMenus();
+    final mobileActionMenus = [
+      if (_useFloatingToolbar) ..._floatingOverflowMenus(),
+      ..._getMobileActionMenus(),
+    ];
     final menus = toolbarControls(context, id, gFFI);
 
     final List<PopupMenuEntry<int>> more = [
@@ -805,9 +1069,18 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     }();
   }
 
-  onPressedTextChat(String id) {
+  void _registerMobileChatShortcut() {
+    if (!isMobile) return;
+    gFFI.shortcutModel.register(kShortcutActionToggleChat,
+        () => onPressedTextChat(widget.id, requestSoftKeyboard: false));
+  }
+
+  onPressedTextChat(String id, {bool requestSoftKeyboard = true}) {
+    if (gFFI.chatModel.chatWindowOverlayEntry == null) {
+      setState(() => _showEdit = false);
+    }
     gFFI.chatModel.changeCurrentKey(MessageKey(id, ChatModel.clientModeID));
-    gFFI.chatModel.toggleChatOverlay();
+    gFFI.chatModel.toggleChatOverlay(requestSoftKeyboard: requestSoftKeyboard);
   }
 
   showChatOptions(String id) async {
@@ -930,7 +1203,12 @@ class KeyHelpTools extends StatefulWidget {
 }
 
 class _KeyHelpToolsState extends State<KeyHelpTools> {
-  var _more = true;
+  // FORK: start collapsed. Upstream defaults to `true`, so the bar opens with
+  // the full Esc/Tab/Home/End/arrows/Ctrl+C block every time the soft keyboard
+  // appears — several rows tall on a phone, and `getSize()` subtracts that
+  // height from the canvas. Only the modifier row plus Fn/pin/`...` shows now;
+  // tapping `...` still expands it for the rest of the session.
+  var _more = false;
   var _fn = false;
   var _pin = false;
   final _keyboardVisibilityController = KeyboardVisibilityController();
@@ -975,12 +1253,13 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
 
   @override
   Widget build(BuildContext context) {
-    final hasModifierOn = inputModel.ctrl ||
-        inputModel.alt ||
-        inputModel.shift ||
-        inputModel.command;
-
-    if (!_pin && !hasModifierOn && !widget.requestShow) {
+    final keyboard = HardwareKeyboard.instance;
+    // Keep touch selections visible without physical modifiers opening the bar.
+    final hasTouchModifier = (inputModel.ctrl && !keyboard.isControlPressed) ||
+        (inputModel.alt && !keyboard.isAltPressed) ||
+        (inputModel.shift && !keyboard.isShiftPressed) ||
+        (inputModel.command && !keyboard.isMetaPressed);
+    if (!_pin && !hasTouchModifier && !widget.requestShow) {
       gFFI.cursorModel
           .keyHelpToolsVisibilityChanged(null, widget.keyboardIsVisible);
       return Offstage();
@@ -1276,6 +1555,14 @@ void showOptions(
   List<TToggleMenu> cursorToggles = await toolbarCursor(context, id, gFFI);
   List<TToggleMenu> displayToggles =
       await toolbarDisplayToggle(context, id, gFFI);
+  if (isMobile) {
+    displayToggles.insert(
+        0,
+        TToggleMenu(
+            child: Text(translate('Lock canvas')),
+            value: gFFI.canvasModel.locked,
+            onChanged: (value) => gFFI.canvasModel.setLocked(value == true)));
+  }
 
   List<TToggleMenu> privacyModeList = [];
   if ((gFFI.ffiModel.pi.features.privacyMode && gFFI.ffiModel.keyboard) ||
